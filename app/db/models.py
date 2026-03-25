@@ -12,6 +12,7 @@ Tablas:
 """
 
 from datetime import datetime
+from typing import Optional
 from sqlalchemy import String, Float, Boolean, ForeignKey, DateTime, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
@@ -62,8 +63,8 @@ class Product(Base):
     coin_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(100))
     symbol: Mapped[str] = mapped_column(String(20))
-    current_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    last_updated: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    current_price: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    last_updated: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     # Relaciones: un producto tiene historial de precios y alertas asociadas
     price_history: Mapped[list["PriceHistory"]] = relationship(back_populates="product")
@@ -116,7 +117,7 @@ class Alert(Base):
     target_price: Mapped[float] = mapped_column(Float)
     condition: Mapped[str] = mapped_column(String(10))  # "above" o "below"
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
-    triggered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    triggered_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="alerts")

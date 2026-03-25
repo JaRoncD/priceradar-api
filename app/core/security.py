@@ -6,6 +6,7 @@ Se importa en los endpoints de autenticación y en las dependencias.
 """
 
 from datetime import datetime, timedelta
+from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from app.core.config import settings
@@ -55,7 +56,7 @@ def create_access_token(data: dict) -> str:
     return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
-def decode_token(token: str) -> dict | None:
+def decode_token(token: str) -> Optional[dict]:
     """
     Decodifica y valida un token JWT.
     Retorna el payload si el token es válido, None si está expirado o es inválido.
