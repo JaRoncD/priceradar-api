@@ -1,16 +1,9 @@
 """
 routes/ws.py
 ------------
-Endpoint WebSocket que transmite precios en tiempo real a los clientes conectados.
-Cada 10 segundos consulta los precios actuales de la base de datos
-y los envía a todos los clientes conectados simultáneamente.
-
-Uso desde el cliente:
-    const ws = new WebSocket("ws://localhost:8000/ws/prices");
-    ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        console.log(data);
-    };
+Endpoint WebSocket con autenticación JWT.
+El cliente debe enviar el token como primer mensaje antes de
+recibir cualquier dato. Si el token es inválido se cierra la conexión.
 """
 
 import asyncio
@@ -18,7 +11,8 @@ import json
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from sqlalchemy import select
 from app.db.session import AsyncSessionLocal
-from app.db.models import Product
+from app.db.models import Product, User
+from app.core.security import decode_token
 
 router = APIRouter(tags=["WebSocket"])
 
@@ -26,12 +20,9 @@ router = APIRouter(tags=["WebSocket"])
 class ConnectionManager:
     """
     Gestiona todas las conexiones WebSocket activas.
-    Permite conectar, desconectar y enviar mensajes a todos
-    los clientes conectados simultáneamente (broadcast).
     """
 
     def __init__(self):
-        # Lista de conexiones WebSocket activas
         self.active_connections: list[WebSocket] = []
 
     async def connect(self, websocket: WebSocket):
@@ -42,14 +33,12 @@ class ConnectionManager:
 
     def disconnect(self, websocket: WebSocket):
         """Elimina una conexión de la lista de activas."""
-        self.active_connections.remove(websocket)
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
         print(f"[WS] Cliente desconectado. Total: {len(self.active_connections)}")
 
     async def broadcast(self, message: dict):
-        """
-        Envía un mensaje a todos los clientes conectados.
-        Si un cliente falla, se desconecta automáticamente.
-        """
+        """Envía un mensaje a todos los clientes conectados."""
         data = json.dumps(message)
         for connection in self.active_connections.copy():
             try:
@@ -58,15 +47,11 @@ class ConnectionManager:
                 self.active_connections.remove(connection)
 
 
-# Instancia global del manager — se comparte entre todas las conexiones
 manager = ConnectionManager()
 
 
 async def get_current_prices() -> list:
-    """
-    Consulta la base de datos y retorna los precios actuales
-    de todos los productos registrados.
-    """
+    """Consulta los precios actuales de todos los productos en la DB."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(Product))
         products = result.scalars().all()
@@ -82,18 +67,45 @@ async def get_current_prices() -> list:
         ]
 
 
+async def authenticate_websocket(websocket: WebSocket) -> bool:
+    """
+    Espera el token JWT como primer mensaje del cliente.
+    Retorna True si el token es válido, False si no lo es.
+
+    Flujo:
+        1. Cliente se conecta
+        2. Servidor espera el token (máximo 10 segundos)
+        3. Si el token es válido, empieza la transmisión
+        4. Si no, cierra la conexión con código 4001
+    """
+    try:
+        # Esperar el token con timeout de 10 segundos
+        token_message = await asyncio.wait_for(
+            websocket.receive_text(),
+            timeout=10.0
+        )
+        payload = decode_token(token_message)
+        if not payload:
+            await websocket.close(code=4001, reason="Token inválido")
+            return False
+        return True
+    except asyncio.TimeoutError:
+        await websocket.close(code=4001, reason="Tiempo de autenticación agotado")
+        return False
+
+
 @router.websocket("/ws/prices")
 async def websocket_prices(websocket: WebSocket):
     """
-    Endpoint WebSocket que transmite precios cada 10 segundos.
+    Endpoint WebSocket autenticado que transmite precios cada 10 segundos.
 
     Flujo:
         1. Cliente se conecta a ws://localhost:8000/ws/prices
-        2. El servidor envía los precios actuales inmediatamente
-        3. Cada 10 segundos envía una actualización
-        4. Si el cliente se desconecta, se limpia la conexión
-    
-    Formato del mensaje:
+        2. Cliente envía el JWT como primer mensaje
+        3. Si es válido, el servidor empieza a transmitir precios
+        4. Cada 10 segundos llega una actualización
+
+    Formato del mensaje recibido:
         {
             "type": "prices",
             "data": [
@@ -108,18 +120,22 @@ async def websocket_prices(websocket: WebSocket):
         }
     """
     await manager.connect(websocket)
+
+    # Validar token antes de transmitir
+    authenticated = await authenticate_websocket(websocket)
+    if not authenticated:
+        manager.disconnect(websocket)
+        return
+
+    await websocket.send_text(json.dumps({"type": "auth", "status": "ok"}))
+
     try:
         while True:
-            # Obtener precios actuales de la DB
             prices = await get_current_prices()
-
-            # Enviar a este cliente
             await websocket.send_text(json.dumps({
                 "type": "prices",
                 "data": prices
             }))
-
-            # Esperar 10 segundos antes de la siguiente actualización
             await asyncio.sleep(10)
 
     except WebSocketDisconnect:
