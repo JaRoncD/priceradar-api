@@ -31,7 +31,7 @@ class UserOut(BaseModel):
     email: str
     username: str
     is_active: bool
-
+    role: str
     model_config = {"from_attributes": True}  # permite convertir modelos ORM a este schema
 
 

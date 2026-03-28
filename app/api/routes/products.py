@@ -1,42 +1,41 @@
 """
 routes/products.py
 ------------------
-Endpoints para gestionar los productos (criptomonedas) que el usuario
-quiere monitorear. Requieren autenticación JWT en todos los endpoints.
+Endpoints para gestionar productos (criptomonedas).
 
-Endpoints:
-    GET  /products          - Lista los productos del usuario
-    POST /products          - Agrega un producto a monitorear
-    GET  /products/{id}/history - Historial de precios de un producto
+Endpoints públicos (cualquier usuario autenticado):
+    GET  /products                  - Lista productos del usuario
+    GET  /products/{id}/history     - Historial de precios
+
+Endpoints privados (solo admin):
+    POST   /products                - Agregar producto al sistema
+    PUT    /products/{id}           - Editar nombre o símbolo
+    DELETE /products/{id}           - Eliminar producto del sistema
 """
 
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.db.session import get_db
 from app.db.models import Product, UserProduct, PriceHistory, User
 from app.schemas.product import ProductAdd, ProductOut, PriceHistoryOut
-from app.api.dependencies import get_current_user
+from app.api.dependencies import get_current_user, get_admin_user
 import httpx
 from app.core.config import settings
 
 router = APIRouter(prefix="/products", tags=["Productos"])
 
 
+class ProductUpdate(BaseModel):
+    """Campos que el admin puede modificar de un producto."""
+    name: Optional[str] = None
+    symbol: Optional[str] = None
+
+
 async def fetch_coin_data(coin_id: str) -> dict:
-    """
-    Consulta la API de CoinGecko para obtener información de una criptomoneda.
-    
-    Args:
-        coin_id: identificador de CoinGecko (ej: 'bitcoin')
-    
-    Returns:
-        Diccionario con name, symbol y precio actual en USD
-    
-    Raises:
-        HTTPException 404 si el coin_id no existe en CoinGecko
-    """
+    """Consulta CoinGecko y retorna los datos de una criptomoneda."""
     url = f"{settings.COINGECKO_URL}/coins/{coin_id}"
     async with httpx.AsyncClient() as client:
         response = await client.get(url, timeout=10)
@@ -54,68 +53,103 @@ async def list_products(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Retorna la lista de criptomonedas que el usuario está monitoreando.
-    Solo muestra los productos asociados al usuario autenticado.
+    Retorna todos los productos registrados en el sistema.
+    Accesible para cualquier usuario autenticado.
     """
-    result = await db.execute(
-        select(Product)
-        .join(UserProduct)
-        .where(UserProduct.user_id == current_user.id)
-    )
+    result = await db.execute(select(Product))
     return result.scalars().all()
 
 
 @router.post("/", response_model=ProductOut, status_code=201)
 async def add_product(
     data: ProductAdd,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_admin_user),  # ← solo admin
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Agrega una criptomoneda a la lista de monitoreo del usuario.
-    
-    Si el producto no existe en la base de datos, lo consulta en
-    CoinGecko y lo crea. Luego asocia el producto al usuario actual.
-    
+    Agrega una criptomoneda al sistema para que todos los usuarios
+    puedan monitorearlo. Solo accesible para administradores.
+
     Raises:
-        HTTPException 400 si el usuario ya está monitoreando ese producto
+        HTTPException 400 si el producto ya existe
+        HTTPException 403 si el usuario no es admin
         HTTPException 404 si el coin_id no existe en CoinGecko
     """
-    # Verificar si el producto ya existe en la DB
     result = await db.execute(
         select(Product).where(Product.coin_id == data.coin_id)
     )
-    product = result.scalar_one_or_none()
+    if result.scalar_one_or_none():
+        raise HTTPException(status_code=400, detail="El producto ya existe")
 
-    if not product:
-        # No existe, consultarlo en CoinGecko y crearlo
-        coin_data = await fetch_coin_data(data.coin_id)
-        product = Product(
-            coin_id=data.coin_id,
-            name=coin_data["name"],
-            symbol=coin_data["symbol"].upper(),
-            current_price=coin_data["market_data"]["current_price"].get("usd"),
-        )
-        db.add(product)
-        await db.flush()  # obtiene el ID sin hacer commit aún
-
-    # Verificar si el usuario ya lo está monitoreando
-    existing = await db.execute(
-        select(UserProduct).where(
-            UserProduct.user_id == current_user.id,
-            UserProduct.product_id == product.id,
-        )
+    coin_data = await fetch_coin_data(data.coin_id)
+    product = Product(
+        coin_id=data.coin_id,
+        name=coin_data["name"],
+        symbol=coin_data["symbol"].upper(),
+        current_price=coin_data["market_data"]["current_price"].get("usd"),
     )
-    if existing.scalar_one_or_none():
-        raise HTTPException(
-            status_code=400,
-            detail="Ya estás monitoreando este producto"
-        )
-
-    db.add(UserProduct(user_id=current_user.id, product_id=product.id))
+    db.add(product)
     await db.commit()
     await db.refresh(product)
     return product
+
+
+@router.put("/{product_id}", response_model=ProductOut)
+async def update_product(
+    product_id: int,
+    data: ProductUpdate,
+    current_user: User = Depends(get_admin_user),  # ← solo admin
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Actualiza el nombre o símbolo de un producto existente.
+    Solo accesible para administradores.
+
+    Raises:
+        HTTPException 403 si el usuario no es admin
+        HTTPException 404 si el producto no existe
+    """
+    result = await db.execute(
+        select(Product).where(Product.id == product_id)
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    # Solo actualiza los campos que fueron enviados
+    if data.name is not None:
+        product.name = data.name
+    if data.symbol is not None:
+        product.symbol = data.symbol.upper()
+
+    await db.commit()
+    await db.refresh(product)
+    return product
+
+
+@router.delete("/{product_id}", status_code=204)
+async def delete_product(
+    product_id: int,
+    current_user: User = Depends(get_admin_user),  # ← solo admin
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Elimina un producto del sistema junto con su historial de precios
+    y las alertas asociadas. Solo accesible para administradores.
+
+    Raises:
+        HTTPException 403 si el usuario no es admin
+        HTTPException 404 si el producto no existe
+    """
+    result = await db.execute(
+        select(Product).where(Product.id == product_id)
+    )
+    product = result.scalar_one_or_none()
+    if not product:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+
+    await db.delete(product)
+    await db.commit()
 
 
 @router.get("/{product_id}/history", response_model=List[PriceHistoryOut])
@@ -127,13 +161,7 @@ async def price_history(
 ):
     """
     Retorna el historial de precios de un producto específico.
-    
-    Args:
-        product_id: ID del producto en la base de datos
-        limit: cantidad máxima de registros a retornar (default: 100)
-    
-    Returns:
-        Lista de precios ordenados del más reciente al más antiguo
+    Accesible para cualquier usuario autenticado.
     """
     result = await db.execute(
         select(PriceHistory)

@@ -2,8 +2,10 @@
 dependencies.py
 ---------------
 Define dependencias reutilizables para los endpoints de FastAPI.
-La más importante es get_current_user, que protege los endpoints
-que requieren autenticación.
+
+Dependencias disponibles:
+    - get_current_user: valida el JWT y retorna el usuario autenticado
+    - get_admin_user: igual que get_current_user pero exige rol 'admin'
 """
 
 from fastapi import Depends, HTTPException, status
@@ -14,8 +16,6 @@ from app.db.session import get_db
 from app.db.models import User
 from app.core.security import decode_token
 
-# Le indica a FastAPI dónde está el endpoint de login para obtener el token.
-# Esto habilita el botón "Authorize" en el Swagger /docs.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 
@@ -24,14 +24,8 @@ async def get_current_user(
     db: AsyncSession = Depends(get_db),
 ) -> User:
     """
-    Dependencia que extrae y valida el token JWT del header Authorization.
-    Si el token es válido, retorna el usuario autenticado.
-    Si no, lanza un error 401.
-
-    Uso en endpoints:
-        @router.get("/me")
-        async def me(current_user: User = Depends(get_current_user)):
-            return current_user
+    Valida el token JWT y retorna el usuario autenticado.
+    Lanza 401 si el token es inválido o el usuario no existe.
     """
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -54,3 +48,23 @@ async def get_current_user(
         raise credentials_exception
 
     return user
+
+
+async def get_admin_user(
+    current_user: User = Depends(get_current_user),
+) -> User:
+    """
+    Extiende get_current_user verificando que el usuario tenga rol 'admin'.
+    Lanza 403 si el usuario no tiene permisos suficientes.
+
+    Uso en endpoints:
+        @router.post("/products")
+        async def create(current_user: User = Depends(get_admin_user)):
+            ...
+    """
+    if current_user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tienes permisos para realizar esta acción"
+        )
+    return current_user
