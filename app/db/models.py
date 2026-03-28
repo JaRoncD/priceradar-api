@@ -39,8 +39,9 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
-    # Un usuario puede tener múltiples alertas
+    # Relaciones
     alerts: Mapped[list["Alert"]] = relationship(back_populates="user")
+    products: Mapped[list["UserProduct"]] = relationship(back_populates="user")
 
 
 class Product(Base):
@@ -69,6 +70,7 @@ class Product(Base):
     # Relaciones: un producto tiene historial de precios y alertas asociadas
     price_history: Mapped[list["PriceHistory"]] = relationship(back_populates="product")
     alerts: Mapped[list["Alert"]] = relationship(back_populates="product")
+    user_products: Mapped[list["UserProduct"]] = relationship(back_populates="product")
 
 
 class PriceHistory(Base):
@@ -122,3 +124,23 @@ class Alert(Base):
 
     user: Mapped["User"] = relationship(back_populates="alerts")
     product: Mapped["Product"] = relationship(back_populates="alerts")
+
+class UserProduct(Base):
+    """
+    Tabla intermedia que relaciona usuarios con productos.
+    Permite que cada usuario tenga su propia lista de criptomonedas a monitorear.
+
+    Columnas:
+        user_id: referencia al usuario
+        product_id: referencia al producto
+        added_at: fecha en que el usuario agregó el producto
+    """
+    __tablename__ = "user_products"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"))
+    product_id: Mapped[int] = mapped_column(ForeignKey("products.id"))
+    added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+    user: Mapped["User"] = relationship(back_populates="products")
+    product: Mapped["Product"] = relationship(back_populates="user_products")
