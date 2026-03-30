@@ -12,6 +12,7 @@ from app.db.session import get_db
 from app.db.models import User
 from app.schemas.user import UserRegister, UserLogin, UserOut, Token
 from app.core.security import hash_password, verify_password, create_access_token
+from app.api.dependencies import get_current_user
 
 router = APIRouter(prefix="/auth", tags=["Autenticación"])
 
@@ -57,3 +58,12 @@ async def login(data: UserLogin, db: AsyncSession = Depends(get_db)):
 
     token = create_access_token({"sub": str(user.id)})
     return {"access_token": token, "token_type": "bearer"}
+
+@router.get("/me", response_model=UserOut)
+async def me(current_user: User = Depends(get_current_user)):
+    """
+    Retorna los datos del usuario actualmente autenticado.
+    Se usa para recuperar el perfil del usuario al cargar la app
+    cuando ya existe un token guardado en el navegador.
+    """
+    return current_user
