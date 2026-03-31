@@ -68,23 +68,14 @@ async def get_current_prices() -> list:
 
 
 async def authenticate_websocket(websocket: WebSocket) -> bool:
-    """
-    Espera el token JWT como primer mensaje del cliente.
-    Retorna True si el token es válido, False si no lo es.
-
-    Flujo:
-        1. Cliente se conecta
-        2. Servidor espera el token (máximo 10 segundos)
-        3. Si el token es válido, empieza la transmisión
-        4. Si no, cierra la conexión con código 4001
-    """
     try:
-        # Esperar el token con timeout de 10 segundos
         token_message = await asyncio.wait_for(
             websocket.receive_text(),
             timeout=10.0
         )
+        print(f"[WS] Token recibido: {token_message[:20]}...")  # ← agrega esto
         payload = decode_token(token_message)
+        print(f"[WS] Payload decodificado: {payload}")  # ← y esto
         if not payload:
             await websocket.close(code=4001, reason="Token inválido")
             return False
